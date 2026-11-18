@@ -107,33 +107,40 @@ module fp16_rem #(
 endmodule
 
 // ------------------------------------------------------------------------------------------
-// Rounder / packer shared by the normal result (FIN) and the subnormal result (RND).
+// Rounder / packer. One result word for every outcome:
+//   normal (FIN)      {s, exponent, fraction}, overflow -> infinity
+//   subnormal (RND)   {s, 0000, keep[10:0]}  (a rounding carry lands in the exponent field)
+//   f_inf / f_nan / f_zero   special results and the flush to zero of a deep underflow
 // ------------------------------------------------------------------------------------------
 module fp16_round (
     input  wire        s,
     input  wire [11:0] qv,          // 12-bit quotient: 11 kept bits + round bit
     input  wire        stkv,        // sticky
     input  wire signed [6:0] e,     // result exponent before rounding
-    input  wire        tiny,        // tiny after rounding (subnormal path)
+    input  wire        m_sub,       // pack as a subnormal result
+    input  wire        f_nan,
+    input  wire        f_inf,
+    input  wire        f_zero,
     output wire        carry,       // rounding carried out of the 11 kept bits
-    output wire [15:0] res_n,       // normal result
-    output wire [4:0]  fl_n,
-    output wire [15:0] res_d,       // subnormal result
-    output wire [4:0]  fl_d
+    output wire        ovf,         // normal result overflows to infinity
+    output wire        inexact,
+    output wire [15:0] res
 );
     wire [10:0] keep    = qv[11:1];
     wire        rnd     = qv[0];
     wire        inc     = rnd & (stkv | keep[0]);
     wire [11:0] keepr   = {1'b0, keep} + {11'd0, inc};
-    wire        inexact = rnd | stkv;
-    assign carry = keepr[11];
+    assign inexact = rnd | stkv;
+    assign carry   = keepr[11];
 
-    wire signed [6:0] er  = e + $signed({6'd0, keepr[11]});
-    wire              ovf = ~er[6] & (er[5] | (&er[4:0]));
-    assign res_n = ovf ? {s, 15'h7C00} : {s, er[4:0], keepr[9:0]};
-    assign fl_n  = ovf ? 5'b00101 : {4'b0000, inexact};
-    assign res_d = {s, 4'b0000, keepr[10:0]};
-    assign fl_d  = {3'b000, tiny & inexact, inexact};
+    wire signed [6:0] er = e + $signed({6'd0, keepr[11]});
+    assign ovf = ~er[6] & (er[5] | (&er[4:0]));
+    wire   nrm  = ~(f_nan | f_inf | f_zero | m_sub);          // plain normal result
+    wire   n_ovf = ovf & nrm;
+    wire   all1 = f_nan | f_inf | n_ovf;
+    wire [4:0] ex = all1 ? 5'h1F : m_sub ? {4'b0000, keepr[10]} : f_zero ? 5'd0 : er[4:0];
+    wire [9:0] fr = f_nan ? 10'h200 : (f_inf | f_zero | n_ovf) ? 10'd0 : keepr[9:0];
+    assign res = {s & ~f_nan, ex, fr};
 endmodule
 
 // ------------------------------------------------------------------------------------------
@@ -145,7 +152,8 @@ module fp16_spec (
     output wire        special_n,
     output wire        invalid_n,
     output wire        divz_n,
-    output wire [15:0] res_spec,
+    output wire        nan_n,
+    output wire        inf_n,
     output wire        a_sub,
     output wire        b_sub,
     output wire        s,
@@ -172,13 +180,12 @@ module fp16_spec (
     wire b_snan = b_nan && !fb[9];
 
     assign invalid_n = (a_zero && b_zero) || (a_inf && b_inf) || a_snan || b_snan;
-    wire nan_n     = a_nan || b_nan || invalid_n;
+    assign nan_n   = a_nan || b_nan || invalid_n;
     assign divz_n = b_zero && !a_zero && !a_inf && !a_nan;
-    wire inf_n     = (a_inf && !b_inf && !b_nan) || divz_n;
+    assign inf_n   = (a_inf && !b_inf && !b_nan) || divz_n;
     wire zero_n    = (a_zero && !b_zero && !b_nan && !a_nan) || (b_inf && !a_inf && !a_nan);
     assign special_n = nan_n || inf_n || zero_n;
     assign s = sa ^ sb;
-    assign res_spec = nan_n ? 16'h7E00 : inf_n ? {s, 15'h7C00} : {s, 15'd0};
 
     // exponent before normalisation: Ea - Eb + 15, subnormals counted as exponent 1
     wire [4:0]  ea_e = {ea[4:1], ea[0] | a_e0};
@@ -226,14 +233,16 @@ module fp16_div_core #(
     reg        run;
     reg  [2:0] ph;
     reg  [1:0] cnt;                        // steps left in this phase
-    assign busy = run;
+    reg        rty;                        // the divide has been repeated once already
+    reg        re_go;                      // one-clock pulse: restart after a detected fault
+    assign busy = run | re_go;             // stays high across the restart so the wrapper cannot write
+    wire       go = start | re_go;
 
     // ---------------- operand decode ----------------
-    wire        special_n, invalid_n, divz_n, a_sub, b_sub, s, a_e0, b_e0;
-    wire [15:0] res_spec;
+    wire        special_n, invalid_n, divz_n, nan_n, inf_n, a_sub, b_sub, s, a_e0, b_e0;
     wire signed [6:0] er_init;
     fp16_spec u_spec (.a(a), .b(b), .special_n(special_n), .invalid_n(invalid_n), .divz_n(divz_n),
-                      .res_spec(res_spec), .a_sub(a_sub), .b_sub(b_sub), .s(s), .a_e0(a_e0), .b_e0(b_e0),
+                      .nan_n(nan_n), .inf_n(inf_n), .a_sub(a_sub), .b_sub(b_sub), .s(s), .a_e0(a_e0), .b_e0(b_e0),
                       .er_init(er_init));
     wire [9:0] fa = a[9:0], fb = b[9:0];
 
@@ -245,6 +254,7 @@ module fp16_div_core #(
     reg        [15:0] L;          // scanned operand / low product bits / result
     reg               rem_r;      // sticky of the subnormal result path
     reg               tiny_r;     // result is tiny after rounding
+    reg               spec_r;     // special-case operands: pack the special result
     assign result = L;
 
     wire        ge   = (MA >= MB);
@@ -254,17 +264,20 @@ module fp16_div_core #(
     // ---------------- seed ROM (index: the next MB while normalising, else MB; at start the raw b) ----------------
     wire        norm_ph = run && (ph == PH_NORM);
     wire [5:0]  rom_idx = !run ? b[9:4] : (norm_ph & ~MB[10]) ? MB[8:3] : MB[9:4];
-    wire [6:0]  y0;
-    fp16_seed_rom u_rom (.idx(rom_idx), .y0(y0));
+    wire [6:0]  y0_raw;
+    fp16_seed_rom u_rom (.idx(rom_idx), .y0(y0_raw));
 
     // ---------------- multiply-accumulate engine ----------------
-    wire [11:0] Msel = (ph == PH_P2) ? N : (ph == PH_P3) ? {1'b0, QR[14:4]} : {1'b0, MB};
+    wire [11:0] Msel_raw = (ph == PH_P2) ? N : (ph == PH_P3) ? {1'b0, QR[14:4]} : {1'b0, MB};
     wire [K-1:0] dig = L[K-1:0];
     wire        last = (cnt == 2'd0);
     wire        sgnm = (ph == PH_P3) && last;                  // signed top digit of e
+    wire signed [12:0] nxtH_raw;
+    wire [K-1:0]       sum_lo_raw;
     wire signed [12:0] nxtH;
     wire [K-1:0]       sum_lo;
-    fp16_mac #(.K(K)) u_mac (.h(H), .m(Msel), .dig(dig), .sgn(sgnm), .nxt_h(nxtH), .sum_lo(sum_lo));
+    wire [11:0]        Msel;
+    fp16_mac #(.K(K)) u_mac (.h(H), .m(Msel), .dig(dig), .sgn(sgnm), .nxt_h(nxtH_raw), .sum_lo(sum_lo_raw));
     wire        [15:0]   nxtL = {sum_lo, L[15:K]};
 
     // values handed from one phase to the next (valid on the last step of a phase)
@@ -278,23 +291,53 @@ module fp16_div_core #(
 
     // ---------------- FIN: remainder, compare, round ----------------
     wire [W4-1:0] full4  = {H, L[15:16-SK4]};
+    wire [11:0]   Qf_raw;
     wire [11:0]   Qf;
     wire          rem_nz, chk_ok;
     fp16_rem #(.PW(W4-12)) u_rem (.prod_lo(full4[11:0]), .prod_hi(full4[W4-1:12]), .ma(MA), .mb(MB), .ge(ge),
-                    .q1(QR[11:0]), .q(Qf), .rem_nz(rem_nz), .chk_ok(chk_ok));
+                    .q1(QR[11:0]), .q(Qf_raw), .rem_nz(rem_nz), .chk_ok(chk_ok));
 
     wire signed [6:0] E  = ER - {6'd0, ~ge};
 
     wire [11:0]   qv     = (ph == PH_FIN) ? Qf : L[11:0];
     wire          stkv   = (ph == PH_FIN) ? rem_nz : rem_r;
-    wire          carry;
-    wire [15:0]   res_n, res_d;
-    wire [4:0]    fl_n, fl_d;
-    fp16_round u_round (.s(s), .qv(qv), .stkv(stkv), .e(E), .tiny(tiny_r), .carry(carry),
-                        .res_n(res_n), .fl_n(fl_n), .res_d(res_d), .fl_d(fl_d));
-
+    wire          carry, ovf, inexact;
+    wire [15:0]   res_raw;
+    wire [15:0]   res;
+    wire          in_fin = (ph == PH_FIN);
+    wire          det    = ~chk_ok & ~spec_r;                    // a fault was detected
     wire          e_pos  = ~E[6] & (E != 7'sd0);                 // E >= 1
     wire          e_far  = E[6] & (E < -7'sd10);                 // E <= -11: everything shifts out
+    fp16_round u_round (.s(s), .qv(qv), .stkv(stkv), .e(E), .m_sub(ph == PH_RND),
+                        .f_nan(in_fin & spec_r & nan_n), .f_inf(in_fin & spec_r & inf_n),
+                        .f_zero(in_fin & (spec_r ? ~(nan_n | inf_n) : e_far)),
+                        .carry(carry), .ovf(ovf), .inexact(inexact), .res(res_raw));
+
+
+    // ---------------- fault-injection taps (simulation only) ----------------
+    // Each tap is ((in ^ x) | s) & ~c with masks driven by test/tb_fault.v; without FAULT_INJECT
+    // the nets pass straight through and nothing is synthesised.
+`ifdef FAULT_INJECT
+    reg [31:0] fi_y0_x = 0, fi_y0_s = 0, fi_y0_c = 0;
+    reg [31:0] fi_m_x = 0,  fi_m_s = 0,  fi_m_c = 0;
+    reg [31:0] fi_h_x = 0,  fi_h_s = 0,  fi_h_c = 0;
+    reg [31:0] fi_l_x = 0,  fi_l_s = 0,  fi_l_c = 0;
+    reg [31:0] fi_q_x = 0,  fi_q_s = 0,  fi_q_c = 0;
+    reg [31:0] fi_r_x = 0,  fi_r_s = 0,  fi_r_c = 0;
+    wire [6:0]  y0      = ((y0_raw ^ fi_y0_x[6:0]) | fi_y0_s[6:0]) & ~fi_y0_c[6:0];
+    assign Msel         = ((Msel_raw ^ fi_m_x[11:0]) | fi_m_s[11:0]) & ~fi_m_c[11:0];
+    assign nxtH         = ((nxtH_raw ^ fi_h_x[12:0]) | fi_h_s[12:0]) & ~fi_h_c[12:0];
+    assign sum_lo       = ((sum_lo_raw ^ fi_l_x[K-1:0]) | fi_l_s[K-1:0]) & ~fi_l_c[K-1:0];
+    assign Qf           = ((Qf_raw ^ fi_q_x[11:0]) | fi_q_s[11:0]) & ~fi_q_c[11:0];
+    assign res          = ((res_raw ^ fi_r_x[15:0]) | fi_r_s[15:0]) & ~fi_r_c[15:0];
+`else
+    wire [6:0]  y0      = y0_raw;
+    assign Msel         = Msel_raw;
+    assign nxtH         = nxtH_raw;
+    assign sum_lo       = sum_lo_raw;
+    assign Qf           = Qf_raw;
+    assign res          = res_raw;
+`endif
 
     // ---------------- datapath ----------------
     always @(posedge clk) begin
@@ -303,8 +346,8 @@ module fp16_div_core #(
             MB <= {~b_e0, fb};
             ER <= er_init;
             H  <= 13'sd0;
-            if (start)                                       // L holds the last result until then
-                L <= special_n ? res_spec : {9'd0, y0};
+            if (go)                                          // L holds the last result until then
+                L <= {9'd0, y0};
         end else begin
             case (ph)
                 PH_NORM: begin
@@ -338,8 +381,7 @@ module fp16_div_core #(
                     end
                 end
                 PH_FIN: begin
-                    if (e_pos) L <= res_n;
-                    else if (e_far) L <= {s, 15'd0};
+                    if (spec_r | e_pos | e_far) L <= res;
                     else begin
                         L      <= {4'd0, Qf};
                         rem_r  <= rem_nz;
@@ -352,7 +394,7 @@ module fp16_div_core #(
                     rem_r <= rem_r | L[0];
                     ER    <= ER + 7'sd1;
                 end
-                PH_RND: L <= res_d;
+                PH_RND: L <= res;
             endcase
         end
     end
@@ -367,22 +409,25 @@ module fp16_div_core #(
             fault     <= 1'b0;
             corrected <= 1'b0;
             done      <= 1'b0;
+            rty       <= 1'b0;
+            re_go     <= 1'b0;
         end else begin
-            done <= 1'b0;
+            done  <= 1'b0;
+            re_go <= 1'b0;
             if (!run) begin
-                if (start) begin
-                    fault     <= 1'b0;
-                    corrected <= 1'b0;
-                    if (special_n) begin
-                        flags <= {invalid_n, divz_n, 3'b000};
-                        done  <= 1'b1;
-                    end else begin
-                        run <= 1'b1;
-                        if (a_sub | b_sub) ph <= PH_NORM;
-                        else begin
-                            ph  <= PH_P2;
-                            cnt <= S1 - 1;
-                        end
+                if (go) begin
+                    if (start) begin
+                        fault     <= 1'b0;
+                        corrected <= 1'b0;
+                        rty       <= 1'b0;
+                    end
+                    run    <= 1'b1;
+                    spec_r <= special_n;
+                    if (special_n) ph <= PH_FIN;
+                    else if (a_sub | b_sub) ph <= PH_NORM;
+                    else begin
+                        ph  <= PH_P2;
+                        cnt <= S1 - 1;
                     end
                 end
             end else begin
@@ -405,19 +450,27 @@ module fp16_div_core #(
                         end
                     end
                     PH_FIN: begin
-                        fault <= ~chk_ok;
-                        if (e_pos | e_far) begin
-                            flags <= e_pos ? fl_n : 5'b00011;
-                            done  <= 1'b1;
+                        if (det & ~rty) begin                    // fault: repeat the divide once
+                            rty   <= 1'b1;
+                            re_go <= 1'b1;
                             run   <= 1'b0;
-                        end else
-                            ph <= PH_DEN;
+                        end else begin
+                            fault     <= det;                    // the repeat failed too
+                            corrected <= rty & ~det;             // the repeat passed
+                            if (spec_r | e_pos | e_far) begin
+                                flags <= spec_r ? {invalid_n, divz_n, 3'b000} : e_far ? 5'b00011 :
+                                         ovf ? 5'b00101 : {4'b0000, inexact};
+                                done  <= 1'b1;
+                                run   <= 1'b0;
+                            end else
+                                ph <= PH_DEN;
+                        end
                     end
                     PH_DEN: begin
                         if (ER == 7'sd0) ph <= PH_RND;
                     end
                     PH_RND: begin
-                        flags <= fl_d;
+                        flags <= {3'b000, tiny_r & inexact, inexact};
                         done  <= 1'b1;
                         run   <= 1'b0;
                     end
