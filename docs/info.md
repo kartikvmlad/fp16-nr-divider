@@ -74,41 +74,74 @@ Writes during BUSY are held off until the divide ends (the strobe must still be 
 
 ## Fault detection and correction
 
-| check | catches | area (flat, K=2, removed alone) |
+Checks (all compare against information that is independent of the fault being looked for):
+
+| check | catches | flat area when it is the only one removed (K=2) |
 | --- | --- | --- |
-| remainder check (`hi_ok`, `R < 2*mb`) | wrong Q1 / Q0 / seed / any flip or stuck bit in the P2-P4 multiplier, adder, accumulator and shift path | 70 |
-| ER == start value (normal operands) | flips / stuck bits of the exponent register | -5 (noise) |
-| MA, MB == operand registers (normal operands) | flips / stuck bits of the mantissa registers | 190 |
-| retry once (time redundancy) | transient faults: result is delivered with `corrected` set | 44 |
+| remainder check: upper bits of the P4 product == `N >> 1` | wrong Q1 / Q0 / seed, any flip or stuck bit in the multiplier, adder, accumulator and shift path of P2-P4 | 145 |
+| ER == its start value (normal operands) | flips / stuck bits of the exponent register | -9 (noise) |
+| MA, MB == operand registers (normal operands) | flips / stuck bits of the mantissa registers | 205 |
+| **pack check** (`fp16_incchk`): Qf vs Q1, result fraction vs kept bits, exponent vs E, sign, subnormal pack | the quotient incrementer, the rounding incrementer, the exponent increment, sign and subnormal packing - everything after the remainder check | 105 |
+| **watchdog**: 6-bit LFSR, restarted at every start / retry, 56 clocks | any divide that does not finish (FSM, `run`, `ph`, `cnt`, shift loops): ends with `done = 1`, `fault = 1` | 205 (7 flops) |
+| retry once (time redundancy) | transient faults: result is delivered with `corrected` set | 74 |
 
-(The area column is the measured flat difference to the full build; differences of about +-150 are abc noise.
-All checks together: 10,314 vs 9,711 with none.) P4 multiplies the held Q1, so a flip of Q1 is also seen by the remainder check.
+The pack check needs no spare copy of the result: an increment by 0 or 1 flips a run of trailing ones, so `out ^ in`
+must be `0..01..1` and its bit 0 must equal the increment. It does not check the forced results (specials,
+overflow to infinity, flush to zero) or the flags.
+The extra range compare `R < 2*mb` is available as `-DFP16_CHK_RANGE` (+92 um2, silent 483 -> 408 per 20,000 faults)
+but is off in the default build because it does not fit under 10,500 um2.
 
-**Behaviour.** A failed check repeats the whole divide once (the operands, `MA/MB/ER` are reloaded from the operand registers).
+**Behaviour.** A failed check repeats the whole divide once (operands, `MA/MB/ER` are reloaded from the operand registers).
 Repeat passes: result delivered, `corrected = 1`. Repeat fails: result delivered, `fault = 1` (do not trust it).
+A subnormal-pack mismatch in the last clock cannot be repeated and sets `fault`. Watchdog timeout sets `fault`, `done`; BUSY drops.
 Specials never raise `fault`.
 
-**Measured with test/tb_fault.v** (200,000 single-bit faults, uniform over 147 modelled bits of
-registers and buses, 1/3 each: one-clock flip, stuck-at-0, stuck-at-1 from the first clock; seed 12345):
+### Area and silent/hang counts after each step (K=2)
 
-| | flip | stuck-at-0 | stuck-at-1 | all |
-| --- | --- | --- | --- | --- |
-| injected | 66,897 | 66,601 | 66,502 | 200,000 |
-| masked (answer right, nothing flagged) | 34,014 | 24,543 | 22,695 | 81,252 |
-| corrected (retry gave the right answer) | 30,510 | 193 | 694 | 31,397 |
-| detected, `fault` flag | 0 | 33,751 | 33,725 | 67,476 |
-| **silent wrong** | 1,946 | 6,071 | 8,117 | **16,134** |
-| hang (no `done`) | 427 | 2,043 | 1,271 | 3,741 |
+Flat post-synthesis area; counts per 50,000 injections (same vectors and seed; the first four rows), last row 20,000.
 
-Leave-one-out on 20,000 faults: no checks at all 8,391 silent wrong; remainder check removed 6,773; ER check removed 2,152
-(full: 1,618); MA/MB check removed 2,261; retry removed leaves silent unchanged but turns 3,163 corrected into detected.
+| step | flat area um2 | silent | hang | corrected | detected |
+| --- | --- | --- | --- | --- | --- |
+| before (previous commit) | 10,314 | 3,919 | 926 | 7,864 | 16,897 |
+| + watchdog | 10,694 (+380) | 3,779 | 0 | 7,864 | 17,963 |
+| + pack check | 10,818 (+124) | 1,299 | 0 | 7,989 | 20,645 |
+| + area recovery (`spec_r` is a wire, ROM re-encoded, range compare off) | **10,484** | see below | 0 | | |
+| final, 20,000 faults | 10,484 | 483 | 0 | 3,097 | 8,308 |
 
-**What is not covered (honest list).**
-- The logic after the check: corrected quotient `Qf`, rounder and result pack (about 11.7k of the 16.1k silent cases).
-- `spec_r`, `ph`, `rem_r`, `tiny_r` flips, subnormal-operand / subnormal-result paths for the ER and MA/MB checks.
-- Faults that make the FSM hang (`run`, `ph`, `cnt`, `ER` in the shift loops): 1.9% of injections. There is no watchdog; the host must time out and reset.
-- Retry fixes transient faults, not permanent stuck-at defects: stuck-at faults mostly end as `fault = 1` (detected, not corrected); `corrected` after a stuck-at is rare (0.7%) and only when the defect is masked on the second pass.
-- The operand registers and the wrapper are unprotected. The diverse fallback (slow restoring division) was NOT built: the area budget is used up.
+Area recovery, each measured: `spec_r` flop removed 10,818 -> 10,810; seed ROM stored as `63 - seed - i` plus a 6-bit adder
+(the table column is smoother: ROM 636 -> 260 um2 alone) 10,810 -> 10,576; range compare off 10,576 -> 10,484.
+Tried and dropped: folding the subnormal sticky bit into `L[12]` (+44), 11-bit form of the range compare (+25).
+Margin to the 10,500 target is 16 um2, below the +-1.5% abc noise: the number must be re-checked in the real flow.
+
+### Campaign: 200,000 single-bit faults (test/tb_fault.v, seed 12345)
+
+Uniform over 146 modelled bits (registers `MA MB ER QR H L ph cnt run rem_r tiny_r rty` and buses `y0 Msel nxtH sum_lo Qf res`),
+one third each of: one-clock flip at a random clock, stuck-at-0, stuck-at-1 from the first clock (permanent defect, the retry sees it too).
+`spec_r` is no longer a flop, so the modelled bit count is one lower than in the previous campaign.
+
+| | flip | stuck-at-0 | stuck-at-1 | all | previous commit (all) |
+| --- | --- | --- | --- | --- | --- |
+| injected | 66,897 | 66,601 | 66,502 | 200,000 | 200,000 |
+| masked (right answer, nothing flagged) | 34,626 | 24,144 | 22,394 | 81,164 | 81,252 |
+| corrected (retry gave the right answer) | 30,530 | 220 | 650 | 31,400 | 31,397 |
+| detected (`fault` flag set) | 674 | 40,388 | 41,302 | 82,364 | 67,476 |
+| **silent wrong** | 1,067 | 1,849 | 2,156 | **5,072** | 16,134 |
+| **hang** | 0 | 0 | 0 | **0** | 3,741 |
+
+Silent plus hang: 19,875 (9.9%) -> 5,072 (2.5%).
+Where the remaining silent cases are (counts of 200,000): `res` 1,361 (forced results and flag-affecting bits are not checked),
+`L` 918, `H` 368, `QR` 338, `ER` 325 (subnormal operands are exempt from the ER check), `Qf` 190, `ph` 195, `MA` 199, `MB` 114.
+
+Leave-one-out on 20,000 faults (area, silent, hang): full 10,484 / 483 / 0; no watchdog 10,279 / 544 / 404; no pack check 10,379 / 1,540 / 0;
+no MA/MB check 10,279 / 1,158 / 0; no ER check 10,493 / 996 / 0; no remainder check 10,339 / 5,543 / 0; no retry 10,410 / 483 / 0 (corrected 3,097 become detected);
+with the range compare 10,576 / 408 / 0; no checks at all 9,482 / 8,309 / 404. (`corrected = 76` in the no-retry row comes from the `rty` bit itself being injected.)
+
+**What is still not covered.**
+- The forced results (specials, overflow, flush) and the flags after the remainder check; subnormal-operand ER/MA/MB corruption.
+- Faults in the operand registers and the wrapper.
+- A watchdog fault itself (a stuck `wd_act` / LFSR gives a spurious timeout or none).
+- Retry fixes transient faults, not permanent stuck-at defects: stuck-at faults end with `fault = 1` (detected, not corrected); `corrected` after a stuck-at is 0.65% and only when the defect is masked on the second pass.
+- The diverse fallback (slow restoring division) was NOT built: no area left.
 
 ## How to test
 
@@ -120,7 +153,7 @@ cd ../model && python3 verify_mantissa.py && python3 verify_reference.py && pyth
 cd c && gcc -O2 -fopenmp -o exhaustive model16.c && ./exhaustive
 ```
 
-Measured results: 16 exponent/sign combinations x all 2^20 fraction pairs through the RTL = 16,777,216 divides, 0 mismatches,
+Measured results (K=2, final RTL of the fault-coverage step): 16 exponent/sign combinations x all 2^20 fraction pairs = 16,777,216 divides, 0 mismatches, 0 spurious fault flags; 600,000 wide and 484 directed vectors, 0 errors; 10/10 cocotb tests on RTL and 9/9 on the synthesized gate netlist (the watchdog test needs an RTL signal); model vs exact reference on all 2^32 pairs (see model/); 1.2 M operands cross-checked against the Fraction reference.
 0 spurious fault flags; 600,000 wide vectors and 484 directed pairs, 0 errors; 9/9 cocotb tests on RTL and on the synthesized
 gate netlist; model vs exact reference on all 2^32 pairs, flags included (C: 0 mismatches; numpy: same checksum and 0 value
 mismatches vs numpy float16); 1.2 M operands cross-checked against the Fraction reference.
