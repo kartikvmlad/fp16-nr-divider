@@ -8,6 +8,7 @@
 # The official gate-level test is `make -B GATES=yes` on the netlist of the Tiny Tapeout GDS action
 # (copied in as gate_level_netlist.v), exactly as in the template.
 
+export GATES = yes   # test.py skips the RTL-only watchdog test
 SIM ?= icarus
 FST ?= -fst
 TOPLEVEL_LANG ?= verilog

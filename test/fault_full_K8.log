@@ -1,0 +1,23 @@
+injected=200000  masked=79120  corrected=34798  detected(fault flag)=80933  silent_wrong=5149  hang=0
+  flip   : n=66897 masked=30561 corrected=33928 detected=627 silent=1781 hang=0
+  stuck0 : n=66601 masked=26076 corrected=220 detected=38539 silent=1766 hang=0
+  stuck1 : n=66502 masked=22483 corrected=650 detected=41767 silent=1602 hang=0
+  target MA      bits=11  n= 15038 masked=  4881 corrected=  5078 detected=  4840 silent=   239 hang=    0
+  target MB      bits=11  n= 15073 masked=  5213 corrected=  4827 detected=  4907 silent=   126 hang=    0
+  target ER      bits= 7  n=  9559 masked=  2840 corrected=  2978 detected=  3416 silent=   325 hang=    0
+  target QR      bits=15  n= 20573 masked=  7654 corrected=  3528 detected=  8581 silent=   810 hang=    0
+  target H       bits=13  n= 17833 masked=  5370 corrected=  2824 detected=  9398 silent=   241 hang=    0
+  target L       bits=16  n= 21696 masked=  6342 corrected=  3675 detected= 11107 silent=   572 hang=    0
+  target ph      bits= 3  n=  4101 masked=   355 corrected=   695 detected=  2836 silent=   215 hang=    0
+  target cnt     bits= 2  n=  2705 masked=   598 corrected=   717 detected=  1388 silent=     2 hang=    0
+  target run     bits= 1  n=  1348 masked=   430 corrected=     0 detected=   918 silent=     0 hang=    0
+  target rem_r   bits= 1  n=  1357 masked=  1300 corrected=     0 detected=     0 silent=    57 hang=    0
+  target tiny_r  bits= 1  n=  1409 masked=  1340 corrected=     0 detected=     0 silent=    69 hang=    0
+  target spec_r  bits= 0  n=     0 masked=     0 corrected=     0 detected=     0 silent=     0 hang=    0
+  target rty     bits= 1  n=  1365 masked=   446 corrected=   919 detected=     0 silent=     0 hang=    0
+  target y0      bits= 7  n=  9522 masked=  5857 corrected=   951 detected=  2705 silent=     9 hang=    0
+  target Msel    bits=12  n= 16541 masked=  3416 corrected=  3454 detected=  9312 silent=   359 hang=    0
+  target nxtH    bits=13  n= 18058 masked=  4214 corrected=  3498 detected= 10248 silent=    98 hang=    0
+  target sum_lo  bits= 4  n=  5539 masked=  5190 corrected=     0 detected=     0 silent=   349 hang=    0
+  target Qf      bits=12  n= 16536 masked= 10201 corrected=   827 detected=  5303 silent=   205 hang=    0
+  target res     bits=16  n= 21747 masked= 13473 corrected=   827 detected=  5974 silent=  1473 hang=    0

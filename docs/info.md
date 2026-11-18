@@ -28,7 +28,7 @@ rounded IEEE quotient. `model/verify_mantissa.py` proves the `Q1 in {Q-1, Q}` cl
 
 ### Hardware
 
-One multiply-accumulate engine, K bits of the scanned operand per clock (`FP16_K`, default **2**).
+One multiply-accumulate engine, K bits of the scanned operand per clock (`FP16_K`, default **8**; the multiplier step is radix-4 Booth for K >= 6).
 Registers: `MA/MB` (normalised mantissas), `ER` (exponent), `QR` (Q0, then Q1), `H` accumulator,
 `L` (scanned operand / low product bits / finally the packed result - there is no result register).
 Subnormal inputs are normalised one bit per clock; subnormal results are shifted one bit per clock
@@ -40,19 +40,23 @@ product equal `N >> 1` iff `Q1` was a legal estimate - that comparison is the bu
 
 ### Cycles per divide (start edge to done, normal operands) and area
 
-| K | clocks | flat area um2 (yosys 0.9 + abc) |
-| --- | --- | --- |
-| **2 (default)** | **20** | **10,314** |
-| 3 | 15 | 11,041 |
-| 4 | 11 | 11,445 |
-| 6 | 10 | 12,466 |
-| 8 | 7 | 13,310 |
-| 12 (one parallel 12x12 multiplier, time-shared) | 6 | 15,312 |
+Flat post-synthesis area of the whole project (yosys 0.9 + abc, same script for every row; about +-1.5% abc noise;
+all fault features on, FP16_CHK_RANGE off). Only the K=2 and K=8 rows are the final design points of their steps;
+the others are the same RTL with another `-DFP16_K`.
 
-Worst case (subnormal operands and subnormal result) K=2: 42 clocks, plus about 20 if a retry happens.
-Only K=2 is under the 10,500 um2 target; K=4 gives the 8-12 clock figure but is about 9% over.
-Two parallel multipliers (not built) would be larger than the K=12 line (one 12x12 multiplier alone is 5.8k um2 hierarchical).
-Critical path (abc `stime`, flop to flop, K=2): about 8.2 ns of a 30 ns clock.
+| K | clocks | flat area um2 | <= 10,500 | <= 13,000 | < 12,500 |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 20 | 10,484 | yes | yes | yes |
+| 3 | 15 | about 11,040 (measured before the Booth step) | no | yes | yes |
+| 4 | 11 | about 11,450 (before the Booth step) | no | yes | yes |
+| 6 (Booth) | 10 | 11,988 | no | yes | yes |
+| 7 (Booth) | 8 | 12,279 | no | yes | yes |
+| **8 (Booth, default)** | **7** | **12,817** | no | **yes** | **no** |
+| 12 (parallel 12x12, array) | 6 | not re-measured (15.3k before the fault additions) | no | no | no |
+
+K=8 was 13,359 um2 before the Booth step. Worst case (subnormal operands and subnormal result): 29 clocks at K=8 (42 at K=2),
+plus a repeat of the divide if a retry happens. Critical path (abc `stime`, flop to flop, K=8): about 7.7 ns of a 30 ns clock.
+Under an area-only abc mapper (`amap`, scripts/abc_scripts.sh) the K=8 build is 11,780 um2: a statement about the estimator, not a design change.
 
 Change the build with `-DFP16_K=n` (the default is the macro at the top of `src/fp16_div_core.v`).
 
@@ -76,7 +80,7 @@ Writes during BUSY are held off until the divide ends (the strobe must still be 
 
 Checks (all compare against information that is independent of the fault being looked for):
 
-| check | catches | flat area when it is the only one removed (K=2) |
+| check | catches | flat area when it is the only one removed (K=2 build) |
 | --- | --- | --- |
 | remainder check: upper bits of the P4 product == `N >> 1` | wrong Q1 / Q0 / seed, any flip or stuck bit in the multiplier, adder, accumulator and shift path of P2-P4 | 145 |
 | ER == its start value (normal operands) | flips / stuck bits of the exponent register | -9 (noise) |
@@ -89,7 +93,7 @@ The pack check needs no spare copy of the result: an increment by 0 or 1 flips a
 must be `0..01..1` and its bit 0 must equal the increment. It does not check the forced results (specials,
 overflow to infinity, flush to zero) or the flags.
 The extra range compare `R < 2*mb` is available as `-DFP16_CHK_RANGE` (+92 um2, silent 483 -> 408 per 20,000 faults)
-but is off in the default build because it does not fit under 10,500 um2.
+but is off in the default build (it was dropped to fit the K=2 area cap; at K=8 there is no room to claim it without re-measuring).
 
 **Behaviour.** A failed check repeats the whole divide once (operands, `MA/MB/ER` are reloaded from the operand registers).
 Repeat passes: result delivered, `corrected = 1`. Repeat fails: result delivered, `fault = 1` (do not trust it).
@@ -113,7 +117,20 @@ Area recovery, each measured: `spec_r` flop removed 10,818 -> 10,810; seed ROM s
 Tried and dropped: folding the subnormal sticky bit into `L[12]` (+44), 11-bit form of the range compare (+25).
 Margin to the 10,500 target is 16 um2, below the +-1.5% abc noise: the number must be re-checked in the real flow.
 
-### Campaign: 200,000 single-bit faults (test/tb_fault.v, seed 12345)
+### Campaign on the K=8 default build: 200,000 single-bit faults (test/tb_fault.v, seed 12345, +NCYC=6)
+
+| | flip | stuck-at-0 | stuck-at-1 | all |
+| --- | --- | --- | --- | --- |
+| masked | 30,561 | 26,076 | 22,483 | 79,120 |
+| corrected | 33,928 | 220 | 650 | 34,798 |
+| detected (`fault` set) | 627 | 38,539 | 41,767 | 80,933 |
+| **silent wrong** | 1,781 | 1,766 | 1,602 | **5,149** |
+| **hang** | 0 | 0 | 0 | **0** |
+
+Same fault model and vectors as below; at K=8 a divide is 6 clocks long, so a one-clock flip lands in a larger share of the live state
+(more corrected, a few more silent cases than at K=2: 5,149 vs 5,072).
+
+### Campaign on the K=2 build: 200,000 single-bit faults (test/tb_fault.v, seed 12345, +NCYC=19)
 
 Uniform over 146 modelled bits (registers `MA MB ER QR H L ph cnt run rem_r tiny_r rty` and buses `y0 Msel nxtH sum_lo Qf res`),
 one third each of: one-clock flip at a random clock, stuck-at-0, stuck-at-1 from the first clock (permanent defect, the retry sees it too).
@@ -153,7 +170,7 @@ cd ../model && python3 verify_mantissa.py && python3 verify_reference.py && pyth
 cd c && gcc -O2 -fopenmp -o exhaustive model16.c && ./exhaustive
 ```
 
-Measured results (K=2, final RTL of the fault-coverage step): 16 exponent/sign combinations x all 2^20 fraction pairs = 16,777,216 divides, 0 mismatches, 0 spurious fault flags; 600,000 wide and 484 directed vectors, 0 errors; 10/10 cocotb tests on RTL and 9/9 on the synthesized gate netlist (the watchdog test needs an RTL signal); model vs exact reference on all 2^32 pairs (see model/); 1.2 M operands cross-checked against the Fraction reference.
+Measured results, K=8 default build (final RTL): 16 exponent/sign combinations x all 2^20 fraction pairs = 16,777,216 divides, 0 mismatches, 0 spurious fault flags (test/exhaustive_K8.log); 600,000 wide and 484 directed vectors, 0 errors; 10/10 cocotb tests on RTL and on the synthesized gate netlist (the watchdog test pokes an RTL flop and skips itself at gate level); campaign above. The K=2 build was verified the same way at the previous step (test/exhaustive_K2.log). Model vs exact reference on all 2^32 pairs (see model/); 1.2 M operands cross-checked against the Fraction reference.
 0 spurious fault flags; 600,000 wide vectors and 484 directed pairs, 0 errors; 9/9 cocotb tests on RTL and on the synthesized
 gate netlist; model vs exact reference on all 2^32 pairs, flags included (C: 0 mismatches; numpy: same checksum and 0 value
 mismatches vs numpy float16); 1.2 M operands cross-checked against the Fraction reference.

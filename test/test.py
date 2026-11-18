@@ -257,7 +257,10 @@ async def test_register_map(dut):
 @cocotb.test()
 async def test_watchdog(dut):
     """A divide that stops without finishing ends with DONE and the fault flag (RTL only: pokes an internal flop)."""
-    if os.environ.get("GATES") == "yes":
+    try:
+        core = dut.user_project.u_core          # exists in RTL only
+        core.run
+    except AttributeError:
         dut._log.info("skipped at gate level (needs an RTL signal)")
         return
     await reset(dut)
@@ -265,7 +268,6 @@ async def test_watchdog(dut):
     await pulse_start(dut)
     await ClockCycles(dut.clk, 4)
     assert int(dut.uio_out.value) & 0x40, "core should be busy"
-    core = dut.user_project.u_core
     core.run.value = 0                      # the core silently stops: busy would drop, done never comes
     await wait_done(dut, "watchdog")
     flags = await read_byte(dut, 4)
