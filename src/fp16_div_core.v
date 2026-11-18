@@ -81,6 +81,22 @@ module fp16_mac #(
 endmodule
 
 // ------------------------------------------------------------------------------------------
+// out == in or in + 1 ?  x = out ^ in must be a run of ones starting at bit 0 (or zero) and its
+// bit 0 must equal the increment that was applied.
+// ------------------------------------------------------------------------------------------
+module fp16_incchk #(
+    parameter W = 10
+) (
+    input  wire [W-1:0] i,
+    input  wire [W-1:0] o,
+    input  wire         inc,
+    output wire         ok
+);
+    wire [W-1:0] x = o ^ i;
+    assign ok = (x[0] == inc) & (&(~x[W-1:1] | x[W-2:0]));
+endmodule
+
+// ------------------------------------------------------------------------------------------
 // Remainder: R = ~(low 12 product bits), compare with mb, corrected quotient, built-in check.
 // ------------------------------------------------------------------------------------------
 module fp16_rem #(
@@ -94,6 +110,7 @@ module fp16_rem #(
     input  wire [11:0] q1,          // the estimate
     output wire [11:0] q,           // corrected quotient
     output wire        rem_nz,
+    output wire        ge2_o,
     output wire        chk_ok
 );
     wire [11:0] r      = ~prod_lo;
@@ -101,6 +118,7 @@ module fp16_rem #(
     wire        ge2    = (r >= {1'b0, mb});
     wire        big    = (r >= {mb, 1'b0});
     wire        eq_mb  = (r == {1'b0, mb});
+    assign ge2_o  = ge2;
     assign rem_nz = ge2 ? ~eq_mb : (r != 12'd0);
     assign q      = q1 + {11'd0, ge2};
 `ifdef FP16_NO_CHK_REM
@@ -128,7 +146,10 @@ module fp16_round (
     output wire        carry,       // rounding carried out of the 11 kept bits
     output wire        ovf,         // normal result overflows to infinity
     output wire        inexact,
-    output wire [15:0] res
+    output wire [15:0] res,
+    output wire [10:0] keep_o,
+    output wire        inc_o,
+    output wire        plain_o      // plain normal result (not special, not subnormal, not overflow)
 );
     wire [10:0] keep    = qv[11:1];
     wire        rnd     = qv[0];
@@ -145,6 +166,9 @@ module fp16_round (
     wire [4:0] ex = all1 ? 5'h1F : m_sub ? {4'b0000, keepr[10]} : f_zero ? 5'd0 : er[4:0];
     wire [9:0] fr = f_nan ? 10'h200 : (f_inf | f_zero | n_ovf) ? 10'd0 : keepr[9:0];
     assign res = {s & ~f_nan, ex, fr};
+    assign keep_o  = keep;
+    assign inc_o   = inc;
+    assign plain_o = nrm & ~ovf;
 endmodule
 
 // ------------------------------------------------------------------------------------------
@@ -303,15 +327,16 @@ module fp16_div_core #(
     wire [W4-1:0] full4  = {H, L[15:16-SK4]};
     wire [11:0]   Qf_raw;
     wire [11:0]   Qf;
-    wire          rem_nz, chk_ok;
+    wire          rem_nz, chk_ok, ge2_s;
     fp16_rem #(.PW(W4-12)) u_rem (.prod_lo(full4[11:0]), .prod_hi(full4[W4-1:12]), .ma(MA), .mb(MB), .ge(ge),
-                    .q1(QR[11:0]), .q(Qf_raw), .rem_nz(rem_nz), .chk_ok(chk_ok));
+                    .q1(QR[11:0]), .q(Qf_raw), .rem_nz(rem_nz), .ge2_o(ge2_s), .chk_ok(chk_ok));
 
     wire signed [6:0] E  = ER - {6'd0, ~ge};
 
     wire [11:0]   qv     = (ph == PH_FIN) ? Qf : L[11:0];
     wire          stkv   = (ph == PH_FIN) ? rem_nz : rem_r;
-    wire          carry, ovf, inexact;
+    wire          carry, ovf, inexact, plain_o, inc_o;
+    wire [10:0]   keep_o;
     wire [15:0]   res_raw;
     wire [15:0]   res;
     wire          in_fin = (ph == PH_FIN);
@@ -325,19 +350,34 @@ module fp16_div_core #(
 `else
     wire          src_ok = (b_sub | (MB == {1'b1, fb})) & (a_sub | (MA == {1'b1, fa}));   // MA, MB still equal the operands
 `endif
-    wire          reg_ok = er_ok & src_ok;
 `ifdef FP16_NO_RETRY
     wire          can_retry = 1'b0;                                       // ablation build: detect only
 `else
     wire          can_retry = ~rty;
 `endif
-    wire          det    = ~(chk_ok & reg_ok) & ~spec_r;                    // a fault was detected
     wire          e_pos  = ~E[6] & (E != 7'sd0);                 // E >= 1
     wire          e_far  = E[6] & (E < -7'sd10);                 // E <= -11: everything shifts out
+`ifdef FP16_NO_CHK_PACK
+    wire          pk_ok  = 1'b1;
+    wire          sb_ok  = 1'b1;
+`else
+    wire q_ok, f_ok, x_ok, s_ok;
+    fp16_incchk #(.W(12)) u_cq (.i(QR[11:0]), .o(Qf), .inc(ge2_s), .ok(q_ok));
+    fp16_incchk #(.W(10)) u_cf (.i(keep_o[9:0]), .o(res[9:0]), .inc(inc_o), .ok(f_ok));
+    fp16_incchk #(.W(5))  u_ce (.i(E[4:0]), .o(res[14:10]), .inc(carry), .ok(x_ok));
+    fp16_incchk #(.W(11)) u_cs (.i(keep_o), .o(res[10:0]), .inc(inc_o), .ok(s_ok));
+    // FIN: Qf from Q1, and, when the plain result is used, its fraction / exponent / sign
+    wire          pk_ok  = q_ok & (~(e_pos & plain_o) | (f_ok & x_ok & (res[15] == s)));
+    // RND: the subnormal result
+    wire          sb_ok  = s_ok & (res[14:11] == 4'd0) & (res[15] == s);
+`endif
+    wire          reg_ok = er_ok & src_ok & pk_ok;
+    wire          det    = ~(chk_ok & reg_ok) & ~spec_r;                    // a fault was detected
     fp16_round u_round (.s(s), .qv(qv), .stkv(stkv), .e(E), .m_sub(ph == PH_RND),
                         .f_nan(in_fin & spec_r & nan_n), .f_inf(in_fin & spec_r & inf_n),
                         .f_zero(in_fin & (spec_r ? ~(nan_n | inf_n) : e_far)),
-                        .carry(carry), .ovf(ovf), .inexact(inexact), .res(res_raw));
+                        .carry(carry), .ovf(ovf), .inexact(inexact), .res(res_raw),
+                        .keep_o(keep_o), .inc_o(inc_o), .plain_o(plain_o));
 
 
     // ---------------- fault-injection taps (simulation only) ----------------
@@ -477,6 +517,7 @@ module fp16_div_core #(
                 if (ph == PH_RND) begin
                     done <= 1'b1;
                     run  <= 1'b0;
+                    if (!sb_ok) fault <= 1'b1;
                     wd_act <= 1'b0;
                 end
             end
