@@ -61,7 +61,7 @@ endmodule
 // One multiply-accumulate step: sum = H + M * digit  (digit unsigned, or signed when `sgn`
 // is set and its top bit is 1). H is signed; sum is 13 + K bits.
 // ------------------------------------------------------------------------------------------
-module fp16_mac #(
+module fp16_mac_arr #(
     parameter K = 4
 ) (
     input  wire signed [12:0]   h,
@@ -81,6 +81,83 @@ module fp16_mac #(
     wire signed [SW-1:0] sum_s = sum;
     assign nxt_h  = sum_s >>> K;
     assign sum_lo = sum[K-1:0];
+endmodule
+
+// Radix-4 Booth form of the same step. The K-bit digit is read as a (K+1)-bit two's complement number
+// (sign bit = sgn & dig[K-1]); every Booth row is 14 bits with an inverted sign bit and one constant
+// corrects all the sign extensions, so the adder tree has ceil((K+1)/2) rows instead of K.
+module fp16_mac_booth #(
+    parameter K = 8
+) (
+    input  wire signed [12:0]   h,
+    input  wire        [11:0]   m,
+    input  wire        [K-1:0]  dig,
+    input  wire                 sgn,
+    output wire signed [12:0]   nxt_h,
+    output wire        [K-1:0]  sum_lo
+);
+    localparam SW = 13 + K;
+    localparam ND = (K + 2) / 2;
+    wire xs = sgn & dig[K-1];
+    wire [2*ND:0] xe = {{(2*ND+1-K){xs}}, dig};
+    wire [2*ND:0] xb = {xe[2*ND-1:0], 1'b0};          // xb[j] = digit bit j-1
+    function [SW-1:0] kconst;                          // -(2^12) for h and -(2^13 << 2i) for every row
+        input integer dummy;
+        integer j;
+        reg [SW-1:0] c;
+        begin
+            c = {SW{1'b0}} - (({{(SW-1){1'b0}}, 1'b1}) << 12);
+            for (j = 0; j < ND; j = j + 1) c = c - (({{(SW-1){1'b0}}, 1'b1}) << (13 + 2*j));
+            kconst = c;
+        end
+    endfunction
+    reg  [SW-1:0] acc;
+    reg  [SW-1:0] cins;
+    integer i;
+    always @(*) begin : ADD
+        reg b2, b1, b0, sel1, sel2, neg;
+        reg [12:0] mag;
+        reg [13:0] row;
+        acc  = {{(SW-13){1'b0}}, ~h[12], h[11:0]} + kconst(0);
+        cins = {SW{1'b0}};
+        for (i = 0; i < ND; i = i + 1) begin
+            b2 = xb[2*i+2]; b1 = xb[2*i+1]; b0 = xb[2*i];
+            sel1 = b1 ^ b0;
+            sel2 = (b2 & ~b1 & ~b0) | (~b2 & b1 & b0);
+            neg  = b2 & ~(b1 & b0);
+            mag  = sel2 ? {m, 1'b0} : sel1 ? {1'b0, m} : 13'd0;
+            row  = {~neg, mag ^ {13{neg}}};
+            acc  = acc + ({{(SW-14){1'b0}}, row} << (2*i));
+            cins = cins | ({{(SW-1){1'b0}}, neg} << (2*i));
+        end
+        acc = acc + cins;
+    end
+    wire signed [SW-1:0] sum_s = acc;
+    assign nxt_h  = sum_s >>> K;
+    assign sum_lo = acc[K-1:0];
+endmodule
+
+// ------------------------------------------------------------------------------------------
+// One multiply-accumulate step: sum = H + M * digit  (digit unsigned, or two's complement when `sgn`
+// is set and its top bit is 1). H is signed; sum is 13 + K bits. Booth recoding pays off from K = 6.
+// ------------------------------------------------------------------------------------------
+module fp16_mac #(
+    parameter K = 4
+) (
+    input  wire signed [12:0]   h,
+    input  wire        [11:0]   m,
+    input  wire        [K-1:0]  dig,
+    input  wire                 sgn,
+    output wire signed [12:0]   nxt_h,
+    output wire        [K-1:0]  sum_lo
+);
+    generate
+        if (K >= 6) begin : g_booth
+            fp16_mac_booth #(.K(K)) u (.h(h), .m(m), .dig(dig), .sgn(sgn), .nxt_h(nxt_h), .sum_lo(sum_lo));
+        end else begin : g_arr
+            fp16_mac_arr #(.K(K)) u (.h(h), .m(m), .dig(dig), .sgn(sgn), .nxt_h(nxt_h), .sum_lo(sum_lo));
+        end
+    endgenerate
 endmodule
 
 // ------------------------------------------------------------------------------------------
