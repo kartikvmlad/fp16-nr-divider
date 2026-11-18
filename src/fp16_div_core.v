@@ -241,6 +241,8 @@ module fp16_div_core #(
     reg  [2:0] ph;
     reg  [2:0] cnt;                        // steps left in this phase
     reg        rty;                        // the divide has been repeated once already
+    reg        wd_act;                     // watchdog armed: a divide is expected to finish
+    reg  [5:0] wd;                         // watchdog LFSR (x^6 + x^5 + 1), restarted at every go
     reg        re_go;                      // one-clock pulse: restart after a detected fault
     assign busy = run | re_go;             // stays high across the restart so the wrapper cannot write
     wire       go = start | re_go;
@@ -433,9 +435,20 @@ module fp16_div_core #(
             done      <= 1'b0;
             rty       <= 1'b0;
             re_go     <= 1'b0;
+            wd_act    <= 1'b0;
         end else begin
             done  <= 1'b0;
             re_go <= 1'b0;
+            if (go) wd_act <= 1'b1;
+`ifndef FP16_NO_WD
+            if (wd_act & (wd == 6'd31)) begin       // 56 clocks without done: give up
+                fault     <= 1'b1;
+                corrected <= 1'b0;
+                done      <= 1'b1;
+                run       <= 1'b0;
+                wd_act    <= 1'b0;
+            end else
+`endif
             if (!run) begin
                 if (go) begin
                     if (start) begin
@@ -457,16 +470,20 @@ module fp16_div_core #(
                         if (spec_r | e_pos | e_far) begin
                             done <= 1'b1;
                             run  <= 1'b0;
+                            wd_act <= 1'b0;
                         end
                     end
                 end
                 if (ph == PH_RND) begin
                     done <= 1'b1;
                     run  <= 1'b0;
+                    wd_act <= 1'b0;
                 end
             end
         end
     end
+
+    always @(posedge clk) wd <= go ? 6'd1 : {wd[4:0], wd[5] ^ wd[4]};
 
     // phase sequencing and flags (no reset: only meaningful while run is set / after done)
     always @(posedge clk) begin
