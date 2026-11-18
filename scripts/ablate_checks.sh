@@ -35,5 +35,8 @@ run no_retry      -DFP16_NO_RETRY
 run no_er_check   -DFP16_NO_CHK_ER
 run no_src_check  -DFP16_NO_CHK_SRC
 run no_rem_check  -DFP16_NO_CHK_REM
-run no_checks     -DFP16_NO_RETRY -DFP16_NO_CHK_ER -DFP16_NO_CHK_SRC -DFP16_NO_CHK_REM
+run no_watchdog   -DFP16_NO_WD
+run no_pack_check -DFP16_NO_CHK_PACK
+run with_range    -DFP16_CHK_RANGE
+run no_checks     -DFP16_NO_RETRY -DFP16_NO_CHK_ER -DFP16_NO_CHK_SRC -DFP16_NO_CHK_REM -DFP16_NO_WD -DFP16_NO_CHK_PACK
 rm -f test/finite_abl.hex

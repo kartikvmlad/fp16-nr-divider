@@ -30,28 +30,31 @@ module fp16_seed_rom (
     input  wire [5:0] idx,
     output wire [6:0] y0
 );
-    reg [5:0] seed;
+    // The table holds t(i) = 63 - seed(i) - i (mod 64): that column is much smoother than the seed itself,
+    // so the logic is about half the size; seed = ~(t + i) restores the value (one 6-bit adder).
+    reg [5:0] t;
     always @(*) begin
         case (idx)
-            6'd0: seed = 6'd63; 6'd1: seed = 6'd61; 6'd2: seed = 6'd59; 6'd3: seed = 6'd57;
-            6'd4: seed = 6'd56; 6'd5: seed = 6'd54; 6'd6: seed = 6'd52; 6'd7: seed = 6'd51;
-            6'd8: seed = 6'd49; 6'd9: seed = 6'd47; 6'd10: seed = 6'd46; 6'd11: seed = 6'd45;
-            6'd12: seed = 6'd43; 6'd13: seed = 6'd42; 6'd14: seed = 6'd40; 6'd15: seed = 6'd39;
-            6'd16: seed = 6'd38; 6'd17: seed = 6'd37; 6'd18: seed = 6'd35; 6'd19: seed = 6'd34;
-            6'd20: seed = 6'd33; 6'd21: seed = 6'd32; 6'd22: seed = 6'd31; 6'd23: seed = 6'd30;
-            6'd24: seed = 6'd29; 6'd25: seed = 6'd28; 6'd26: seed = 6'd27; 6'd27: seed = 6'd26;
-            6'd28: seed = 6'd25; 6'd29: seed = 6'd24; 6'd30: seed = 6'd23; 6'd31: seed = 6'd22;
-            6'd32: seed = 6'd21; 6'd33: seed = 6'd20; 6'd34: seed = 6'd19; 6'd35: seed = 6'd18;
-            6'd36: seed = 6'd18; 6'd37: seed = 6'd17; 6'd38: seed = 6'd16; 6'd39: seed = 6'd15;
-            6'd40: seed = 6'd14; 6'd41: seed = 6'd14; 6'd42: seed = 6'd13; 6'd43: seed = 6'd12;
-            6'd44: seed = 6'd12; 6'd45: seed = 6'd11; 6'd46: seed = 6'd10; 6'd47: seed = 6'd9;
-            6'd48: seed = 6'd9; 6'd49: seed = 6'd8; 6'd50: seed = 6'd8; 6'd51: seed = 6'd7;
-            6'd52: seed = 6'd6; 6'd53: seed = 6'd6; 6'd54: seed = 6'd5; 6'd55: seed = 6'd5;
-            6'd56: seed = 6'd4; 6'd57: seed = 6'd3; 6'd58: seed = 6'd3; 6'd59: seed = 6'd2;
-            6'd60: seed = 6'd2; 6'd61: seed = 6'd1; 6'd62: seed = 6'd1; default: seed = 6'd0;
+            6'd0: t = 6'd0; 6'd1: t = 6'd1; 6'd2: t = 6'd2; 6'd3: t = 6'd3;
+            6'd4: t = 6'd3; 6'd5: t = 6'd4; 6'd6: t = 6'd5; 6'd7: t = 6'd5;
+            6'd8: t = 6'd6; 6'd9: t = 6'd7; 6'd10: t = 6'd7; 6'd11: t = 6'd7;
+            6'd12: t = 6'd8; 6'd13: t = 6'd8; 6'd14: t = 6'd9; 6'd15: t = 6'd9;
+            6'd16: t = 6'd9; 6'd17: t = 6'd9; 6'd18: t = 6'd10; 6'd19: t = 6'd10;
+            6'd20: t = 6'd10; 6'd21: t = 6'd10; 6'd22: t = 6'd10; 6'd23: t = 6'd10;
+            6'd24: t = 6'd10; 6'd25: t = 6'd10; 6'd26: t = 6'd10; 6'd27: t = 6'd10;
+            6'd28: t = 6'd10; 6'd29: t = 6'd10; 6'd30: t = 6'd10; 6'd31: t = 6'd10;
+            6'd32: t = 6'd10; 6'd33: t = 6'd10; 6'd34: t = 6'd10; 6'd35: t = 6'd10;
+            6'd36: t = 6'd9; 6'd37: t = 6'd9; 6'd38: t = 6'd9; 6'd39: t = 6'd9;
+            6'd40: t = 6'd9; 6'd41: t = 6'd8; 6'd42: t = 6'd8; 6'd43: t = 6'd8;
+            6'd44: t = 6'd7; 6'd45: t = 6'd7; 6'd46: t = 6'd7; 6'd47: t = 6'd7;
+            6'd48: t = 6'd6; 6'd49: t = 6'd6; 6'd50: t = 6'd5; 6'd51: t = 6'd5;
+            6'd52: t = 6'd5; 6'd53: t = 6'd4; 6'd54: t = 6'd4; 6'd55: t = 6'd3;
+            6'd56: t = 6'd3; 6'd57: t = 6'd3; 6'd58: t = 6'd2; 6'd59: t = 6'd2;
+            6'd60: t = 6'd1; 6'd61: t = 6'd1; 6'd62: t = 6'd0; 6'd63: t = 6'd0;
         endcase
     end
-    assign y0 = {1'b1, seed};
+    wire [5:0] sum = t + idx;
+    assign y0 = {1'b1, ~sum};
 endmodule
 
 // ------------------------------------------------------------------------------------------
@@ -123,8 +126,10 @@ module fp16_rem #(
     assign q      = q1 + {11'd0, ge2};
 `ifdef FP16_NO_CHK_REM
     assign chk_ok = 1'b1;                     // ablation build: remainder check disabled
+`elsif FP16_CHK_RANGE
+    assign chk_ok = hi_ok & ~big;             // also R < 2*mb (+92 um2: not in the default build)
 `else
-    assign chk_ok = hi_ok & ~big;
+    assign chk_ok = hi_ok;                    // upper product bits == N >> 1
 `endif
 endmodule
 
@@ -287,7 +292,7 @@ module fp16_div_core #(
     reg        [15:0] L;          // scanned operand / low product bits / result
     reg               rem_r;      // sticky of the subnormal result path
     reg               tiny_r;     // result is tiny after rounding
-    reg               spec_r;     // special-case operands: pack the special result
+    wire              spec_r = special_n;   // special-case operands (operands are stable while busy)
     assign result = L;
 
     wire        ge   = (MA >= MB);
@@ -530,7 +535,6 @@ module fp16_div_core #(
     always @(posedge clk) begin
         if (!run) begin
             if (go) begin
-                spec_r <= special_n;
                 if (special_n) ph <= PH_FIN;
                 else if (a_sub | b_sub) ph <= PH_NORM;
                 else begin

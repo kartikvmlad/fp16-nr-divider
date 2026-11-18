@@ -252,3 +252,23 @@ async def test_register_map(dut):
     status = await read_byte(dut, 5)
     assert status & 0x3 == 0x1, f"status {status:08b}: done must be set, busy clear"
     assert (await read_byte(dut, 6)) == status and (await read_byte(dut, 7)) == status
+
+
+@cocotb.test()
+async def test_watchdog(dut):
+    """A divide that stops without finishing ends with DONE and the fault flag (RTL only: pokes an internal flop)."""
+    if os.environ.get("GATES") == "yes":
+        dut._log.info("skipped at gate level (needs an RTL signal)")
+        return
+    await reset(dut)
+    await write_operands(dut, 0x4900, 0x3E00)
+    await pulse_start(dut)
+    await ClockCycles(dut.clk, 4)
+    assert int(dut.uio_out.value) & 0x40, "core should be busy"
+    core = dut.user_project.u_core
+    core.run.value = 0                      # the core silently stops: busy would drop, done never comes
+    await wait_done(dut, "watchdog")
+    flags = await read_byte(dut, 4)
+    assert flags & 0x80, f"fault flag must be set, flags={flags:08b}"
+    # and the divider recovers: the next divide is correct and fault-free
+    await check(dut, 0x3C00, 0x4200)

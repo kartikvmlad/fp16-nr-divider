@@ -68,7 +68,6 @@ module tb_fault;
                 8:  begin nv = (how == 2) ? ~dut.run     : how; dut.run     = nv; end
                 9:  begin nv = (how == 2) ? ~dut.rem_r   : how; dut.rem_r   = nv; end
                 10: begin nv = (how == 2) ? ~dut.tiny_r  : how; dut.tiny_r  = nv; end
-                11: begin nv = (how == 2) ? ~dut.spec_r  : how; dut.spec_r  = nv; end
                 12: begin nv = (how == 2) ? ~dut.rty     : how; dut.rty     = nv; end
                 default: ;
             endcase
@@ -105,7 +104,7 @@ module tb_fault;
         tw[0] = 11; tn[0] = "MA";   tw[1] = 11; tn[1] = "MB";   tw[2] = 7;  tn[2] = "ER";
         tw[3] = 15; tn[3] = "QR";   tw[4] = 13; tn[4] = "H";    tw[5] = 16; tn[5] = "L";
         tw[6] = 3;  tn[6] = "ph";   tw[7] = 2;  tn[7] = "cnt";  tw[8] = 1;  tn[8] = "run";
-        tw[9] = 1;  tn[9] = "rem_r"; tw[10] = 1; tn[10] = "tiny_r"; tw[11] = 1; tn[11] = "spec_r";
+        tw[9] = 1;  tn[9] = "rem_r"; tw[10] = 1; tn[10] = "tiny_r"; tw[11] = 0; tn[11] = "spec_r";
         tw[12] = 1; tn[12] = "rty"; tw[13] = 7; tn[13] = "y0";  tw[14] = 12; tn[14] = "Msel";
         tw[15] = 13; tn[15] = "nxtH"; tw[16] = 4; tn[16] = "sum_lo"; tw[17] = 12; tn[17] = "Qf";
         tw[18] = 16; tn[18] = "res";
