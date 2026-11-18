@@ -5,12 +5,12 @@
 # model/ tie to exact rational arithmetic). Every combination uses its own private vector file, so
 # jobs can run side by side without sharing any file.
 #
-#   test/run_exhaustive.sh [jobs]        (default 6 parallel jobs; one 2^20 run takes ~4.5 min at K=2)
+#   test/run_exhaustive.sh [jobs]        (default 6 parallel jobs; one 2^20 run takes ~1.5 min at K=8, ~4.5 min at K=2)
 #   FP16_K=4 test/run_exhaustive.sh      other digit width (the result must not change)
 set -e
 cd "$(dirname "$0")"
 JOBS=${1:-6}
-K=${FP16_K:-2}
+K=${FP16_K:-8}
 WORK=$(mktemp -d exh.XXXXXX)
 iverilog -g2005 -DFP16_K=$K -o "$WORK/tb" tb_vectors.v ../src/fp16_div_core.v 2>&1 | grep -v timescale || true
 

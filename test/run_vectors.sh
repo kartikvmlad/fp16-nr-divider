@@ -4,7 +4,7 @@
 # (The long exhaustive run is test/run_exhaustive.sh.)
 set -e
 cd "$(dirname "$0")"
-K=${FP16_K:-2}
+K=${FP16_K:-8}
 python3 ../model/verify_mantissa.py
 python3 ../model/verify_reference.py 20000
 iverilog -g2005 -DFP16_K=$K -o tb_vectors tb_vectors.v ../src/fp16_div_core.v

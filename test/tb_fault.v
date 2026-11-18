@@ -21,7 +21,7 @@
 //   iverilog -DFAULT_INJECT -o tb_fault tb_fault.v ../src/fp16_div_core.v
 //   vvp tb_fault +VEC=finite.hex [+SEED=n] [+TYPES=mask] [+NCYC=n]
 //     TYPES: bit mask of flip(1) / stuck0(2) / stuck1(4), default 7;  NCYC: clocks of a normal divide
-//     (flips land uniformly in 1..NCYC of the first attempt; default 19 = the K=2 build, use 10 for K=4)
+//     (flips land uniformly in 1..NCYC of the first attempt; default 6 = the K=8 build, 19 for K=2, 10 for K=4)
 `default_nettype none
 `timescale 1ns / 1ps
 module tb_fault;
@@ -116,7 +116,7 @@ module tb_fault;
         end
         if (!$value$plusargs("SEED=%d", seed)) seed = 12345;
         if (!$value$plusargs("TYPES=%d", types_mask)) types_mask = 7;
-        if (!$value$plusargs("NCYC=%d", ncyc)) ncyc = 19;       // clocks of a normal divide (K=2: 20 incl. start)
+        if (!$value$plusargs("NCYC=%d", ncyc)) ncyc = 6;        // clocks of a normal divide (K=8: 7 incl. start; K=2: use 19)
         fd = $fopen(path, "r");
         n = 0; n_masked = 0; n_corr = 0; n_det = 0; n_silent = 0; n_hang = 0; n_inj = 0;
         for (i = 0; i < 3; i = i + 1) begin

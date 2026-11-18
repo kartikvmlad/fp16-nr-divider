@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "model"))
 from fp16_div_model import fp16_div  # noqa: E402
 
 WR, START = 0x04, 0x08
-TIMEOUT = 200          # clocks; a divide takes 11 (worst case 33)
+TIMEOUT = 200          # clocks; a divide takes 7 with K=8 (20 with K=2); worst case 42
 
 
 def pins(addr):
@@ -134,10 +134,10 @@ async def test_random(dut):
 async def test_cycle_count(dut):
     """Two normal operands: busy is high for exactly (multiply steps + 1) clocks.
 
-    K = multiplier digit width of the build (-DFP16_K, default 2; set FP16_K in the environment to match).
-    With K = 2 a divide takes 20 clocks from the start edge to done, with K = 4 it takes 11."""
+    K = multiplier digit width of the build (-DFP16_K, default 8; set FP16_K in the environment to match).
+    With K = 8 a divide takes 7 clocks from the start edge to done, with K = 4 it takes 11, with K = 2 it takes 20."""
     await reset(dut)
-    k = int(os.environ.get("FP16_K", "2"))
+    k = int(os.environ.get("FP16_K", "8"))
     ceil = lambda a, b: -(-a // b)
     steps = 2 * ceil(7, k) + ceil(8, k) + ceil(11, k)
     await write_operands(dut, 0x4900, 0x3E00)        # 10.0 / 1.5, both normal

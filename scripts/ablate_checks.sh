@@ -4,13 +4,13 @@
 # src/fp16_div_core.v), then everything off. Prints one line per build:
 #   area (flat, um2), flops, then the injection summary line of test/tb_fault.v.
 #
-#   scripts/ablate_checks.sh [n_vectors] [K]      (default 20000 vectors, K=2)
+#   scripts/ablate_checks.sh [n_vectors] [K]      (default 20000 vectors, K=8)
 #
 # The injection campaign is test/tb_fault.v (same seed for every build, so builds are comparable).
 set -e
 cd "$(dirname "$0")/.."
 N=${1:-20000}
-K=${2:-2}
+K=${2:-8}
 NCYC=$(python3 - <<EOF
 k=$K
 c=lambda a,b:-(-a//b)

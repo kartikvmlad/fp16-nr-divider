@@ -306,7 +306,7 @@ endmodule
 
 // ------------------------------------------------------------------------------------------
 `ifndef FP16_K
-`define FP16_K 2             // multiplier digit width (2 .. 12); override with -DFP16_K=n
+`define FP16_K 8             // multiplier digit width (2 .. 12); override with -DFP16_K=n (8: 7 clocks, 2: 20 clocks, smallest)
 `endif
 module fp16_div_core #(
     parameter K = `FP16_K
