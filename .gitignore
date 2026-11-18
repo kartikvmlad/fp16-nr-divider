@@ -27,3 +27,4 @@ model/c/exhaustive
 synth_out/
 *.pyc
 scratch/
+test/exh.*/

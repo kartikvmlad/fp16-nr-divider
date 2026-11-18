@@ -103,7 +103,11 @@ module fp16_rem #(
     wire        eq_mb  = (r == {1'b0, mb});
     assign rem_nz = ge2 ? ~eq_mb : (r != 12'd0);
     assign q      = q1 + {11'd0, ge2};
+`ifdef FP16_NO_CHK_REM
+    assign chk_ok = 1'b1;                     // ablation build: remainder check disabled
+`else
     assign chk_ok = hi_ok & ~big;
+`endif
 endmodule
 
 // ------------------------------------------------------------------------------------------
@@ -309,7 +313,22 @@ module fp16_div_core #(
     wire [15:0]   res_raw;
     wire [15:0]   res;
     wire          in_fin = (ph == PH_FIN);
-    wire          reg_ok = (a_sub | b_sub | (ER == er_init)) & (b_sub | (MB == {1'b1, fb})) & (a_sub | (MA == {1'b1, fa}));
+`ifdef FP16_NO_CHK_ER
+    wire          er_ok  = 1'b1;                                          // ablation build
+`else
+    wire          er_ok  = a_sub | b_sub | (ER == er_init);               // ER still at its start value
+`endif
+`ifdef FP16_NO_CHK_SRC
+    wire          src_ok = 1'b1;                                          // ablation build
+`else
+    wire          src_ok = (b_sub | (MB == {1'b1, fb})) & (a_sub | (MA == {1'b1, fa}));   // MA, MB still equal the operands
+`endif
+    wire          reg_ok = er_ok & src_ok;
+`ifdef FP16_NO_RETRY
+    wire          can_retry = 1'b0;                                       // ablation build: detect only
+`else
+    wire          can_retry = ~rty;
+`endif
     wire          det    = ~(chk_ok & reg_ok) & ~spec_r;                    // a fault was detected
     wire          e_pos  = ~E[6] & (E != 7'sd0);                 // E >= 1
     wire          e_far  = E[6] & (E < -7'sd10);                 // E <= -11: everything shifts out
@@ -428,13 +447,13 @@ module fp16_div_core #(
                 end
             end else begin
                 if (ph == PH_FIN) begin
-                    if (det & ~rty) begin                        // fault: repeat the divide once
+                    if (det & can_retry) begin                   // fault: repeat the divide once
                         rty   <= 1'b1;
                         re_go <= 1'b1;
                         run   <= 1'b0;
                     end else begin
                         fault     <= det;                        // the repeat failed too
-                        corrected <= rty & ~det;                 // the repeat passed
+                        corrected <= rty & ~det;                 // the repeat passed (rty is never set without retry)
                         if (spec_r | e_pos | e_far) begin
                             done <= 1'b1;
                             run  <= 1'b0;
@@ -481,7 +500,7 @@ module fp16_div_core #(
                     end
                 end
                 PH_FIN: begin
-                    if (!(det & ~rty)) begin
+                    if (!(det & can_retry)) begin
                         if (spec_r | e_pos | e_far)
                             flags <= spec_r ? {invalid_n, divz_n, 3'b000} : e_far ? 5'b00011 :
                                      ovf ? 5'b00101 : {4'b0000, inexact};

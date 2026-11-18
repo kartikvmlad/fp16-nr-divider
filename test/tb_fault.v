@@ -19,7 +19,9 @@
 //
 //   python ../model/gen_vectors.py finite finite.hex
 //   iverilog -DFAULT_INJECT -o tb_fault tb_fault.v ../src/fp16_div_core.v
-//   vvp tb_fault +VEC=finite.hex [+SEED=n] [+TYPES=0|1|2|3]    (TYPES: bit mask of flip/stuck0/stuck1)
+//   vvp tb_fault +VEC=finite.hex [+SEED=n] [+TYPES=mask] [+NCYC=n]
+//     TYPES: bit mask of flip(1) / stuck0(2) / stuck1(4), default 7;  NCYC: clocks of a normal divide
+//     (flips land uniformly in 1..NCYC of the first attempt; default 19 = the K=2 build, use 10 for K=4)
 `default_nettype none
 `timescale 1ns / 1ps
 module tb_fault;
@@ -42,7 +44,7 @@ module tb_fault;
 
     reg [55:0]   vec;
     reg [1023:0] path;
-    integer fd, code, n, seed, i, t, bit_, typ, at, cyc, types_mask;
+    integer fd, code, n, seed, i, t, bit_, typ, at, cyc, types_mask, ncyc;
     integer n_masked, n_corr, n_det, n_silent, n_hang, n_inj;
     integer c_masked [0:2], c_corr [0:2], c_det [0:2], c_silent [0:2], c_hang [0:2], c_tot [0:2];
     integer tt_tot [0:NT-1], tt_silent [0:NT-1], tt_det [0:NT-1], tt_corr [0:NT-1], tt_masked [0:NT-1], tt_hang [0:NT-1];
@@ -115,6 +117,7 @@ module tb_fault;
         end
         if (!$value$plusargs("SEED=%d", seed)) seed = 12345;
         if (!$value$plusargs("TYPES=%d", types_mask)) types_mask = 7;
+        if (!$value$plusargs("NCYC=%d", ncyc)) ncyc = 19;       // clocks of a normal divide (K=2: 20 incl. start)
         fd = $fopen(path, "r");
         n = 0; n_masked = 0; n_corr = 0; n_det = 0; n_silent = 0; n_hang = 0; n_inj = 0;
         for (i = 0; i < 3; i = i + 1) begin
@@ -133,7 +136,7 @@ module tb_fault;
             bit_ = {$random(seed)} % total_bits;
             t = 0;
             while (bit_ >= tw[t]) begin bit_ = bit_ - tw[t]; t = t + 1; end
-            at = (typ == 0) ? 1 + ({$random(seed)} % 12) : 1;      // flip: any clock of an 11-clock divide
+            at = (typ == 0) ? 1 + ({$random(seed)} % ncyc) : 1;    // flip: any clock of the first attempt
             @(negedge clk);
             a = vec[55:40];
             b = vec[39:24];

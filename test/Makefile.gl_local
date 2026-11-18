@@ -1,0 +1,25 @@
+# Gate-level simulation of the netlist produced by scripts/synth.sh (yosys + abc, sky130_fd_sc_hd),
+# using the same cocotb tests as the RTL run (test.py only touches pins).
+#
+#   scripts/synth.sh                 # writes synth_out/flat.v
+#   make -f Makefile.gl_local -B
+#
+# This is a local functional check of the synthesised netlist (no power pins, zero-delay models).
+# The official gate-level test is `make -B GATES=yes` on the netlist of the Tiny Tapeout GDS action
+# (copied in as gate_level_netlist.v), exactly as in the template.
+
+SIM ?= icarus
+FST ?= -fst
+TOPLEVEL_LANG ?= verilog
+SIM_BUILD = sim_build/gl_local
+PDK_VERILOG ?= $(HOME)/pdks/sky130A/libs.ref/sky130_fd_sc_hd/verilog
+
+COMPILE_ARGS += -DFUNCTIONAL -DSIM -DUNIT_DELAY=\#0
+VERILOG_SOURCES += $(PDK_VERILOG)/primitives.v
+VERILOG_SOURCES += $(PDK_VERILOG)/sky130_fd_sc_hd.v
+VERILOG_SOURCES += $(PWD)/../synth_out/flat.v
+VERILOG_SOURCES += $(PWD)/tb.v
+TOPLEVEL = tb
+COCOTB_TEST_MODULES = test
+
+include $(shell cocotb-config --makefiles)/Makefile.sim
