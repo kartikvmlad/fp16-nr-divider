@@ -195,8 +195,11 @@ module fp16_spec (
 endmodule
 
 // ------------------------------------------------------------------------------------------
+`ifndef FP16_K
+`define FP16_K 2             // multiplier digit width (2 .. 12); override with -DFP16_K=n
+`endif
 module fp16_div_core #(
-    parameter K = 4                  // multiplier digit width (4, 6 or 8)
+    parameter K = `FP16_K
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -213,7 +216,7 @@ module fp16_div_core #(
 
     localparam S1  = (7 + K - 1) / K;      // steps to scan Y0 (7 bits)
     localparam S3  = (8 + K - 1) / K;      // steps to scan e (8 bits, signed)
-    localparam S4  = (12 + K - 1) / K;     // steps to scan Q1 (12 bits)
+    localparam S4  = (11 + K - 1) / K;     // steps to scan mb (11 bits)
     localparam SK1 = S1 * K;
     localparam SK3 = S3 * K;
     localparam SK4 = S4 * K;
@@ -232,7 +235,7 @@ module fp16_div_core #(
 
     reg        run;
     reg  [2:0] ph;
-    reg  [1:0] cnt;                        // steps left in this phase
+    reg  [2:0] cnt;                        // steps left in this phase
     reg        rty;                        // the divide has been repeated once already
     reg        re_go;                      // one-clock pulse: restart after a detected fault
     assign busy = run | re_go;             // stays high across the restart so the wrapper cannot write
@@ -268,9 +271,10 @@ module fp16_div_core #(
     fp16_seed_rom u_rom (.idx(rom_idx), .y0(y0_raw));
 
     // ---------------- multiply-accumulate engine ----------------
-    wire [11:0] Msel_raw = (ph == PH_P2) ? N : (ph == PH_P3) ? {1'b0, QR[14:4]} : {1'b0, MB};
+    wire [11:0] Msel_raw = (ph == PH_P2) ? N : (ph == PH_P3) ? {1'b0, QR[14:4]} :
+                           (ph == PH_P4) ? QR[11:0] : {1'b0, MB};
     wire [K-1:0] dig = L[K-1:0];
-    wire        last = (cnt == 2'd0);
+    wire        last = (cnt == 3'd0);
     wire        sgnm = (ph == PH_P3) && last;                  // signed top digit of e
     wire signed [12:0] nxtH_raw;
     wire [K-1:0]       sum_lo_raw;
@@ -305,7 +309,8 @@ module fp16_div_core #(
     wire [15:0]   res_raw;
     wire [15:0]   res;
     wire          in_fin = (ph == PH_FIN);
-    wire          det    = ~chk_ok & ~spec_r;                    // a fault was detected
+    wire          reg_ok = (a_sub | b_sub | (ER == er_init)) & (b_sub | (MB == {1'b1, fb})) & (a_sub | (MA == {1'b1, fa}));
+    wire          det    = ~(chk_ok & reg_ok) & ~spec_r;                    // a fault was detected
     wire          e_pos  = ~E[6] & (E != 7'sd0);                 // E >= 1
     wire          e_far  = E[6] & (E < -7'sd10);                 // E <= -11: everything shifts out
     fp16_round u_round (.s(s), .qv(qv), .stkv(stkv), .e(E), .m_sub(ph == PH_RND),
@@ -373,7 +378,7 @@ module fp16_div_core #(
                             end
                             PH_P3: begin
                                 QR <= {3'b000, q1};
-                                L  <= {4'd0, q1};
+                                L  <= {5'd0, MB};
                                 H  <= {1'b0, ~N0, 11'h7FF};
                             end
                             default: ;
@@ -400,12 +405,10 @@ module fp16_div_core #(
     end
 
     // ---------------- control ----------------
+    // handshake and status flops (reset)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             run       <= 1'b0;
-            ph        <= PH_P2;
-            cnt       <= 2'd0;
-            flags     <= 5'd0;
             fault     <= 1'b0;
             corrected <= 1'b0;
             done      <= 1'b0;
@@ -421,61 +424,76 @@ module fp16_div_core #(
                         corrected <= 1'b0;
                         rty       <= 1'b0;
                     end
-                    run    <= 1'b1;
-                    spec_r <= special_n;
-                    if (special_n) ph <= PH_FIN;
-                    else if (a_sub | b_sub) ph <= PH_NORM;
-                    else begin
+                    run <= 1'b1;
+                end
+            end else begin
+                if (ph == PH_FIN) begin
+                    if (det & ~rty) begin                        // fault: repeat the divide once
+                        rty   <= 1'b1;
+                        re_go <= 1'b1;
+                        run   <= 1'b0;
+                    end else begin
+                        fault     <= det;                        // the repeat failed too
+                        corrected <= rty & ~det;                 // the repeat passed
+                        if (spec_r | e_pos | e_far) begin
+                            done <= 1'b1;
+                            run  <= 1'b0;
+                        end
+                    end
+                end
+                if (ph == PH_RND) begin
+                    done <= 1'b1;
+                    run  <= 1'b0;
+                end
+            end
+        end
+    end
+
+    // phase sequencing and flags (no reset: only meaningful while run is set / after done)
+    always @(posedge clk) begin
+        if (!run) begin
+            if (go) begin
+                spec_r <= special_n;
+                if (special_n) ph <= PH_FIN;
+                else if (a_sub | b_sub) ph <= PH_NORM;
+                else begin
+                    ph  <= PH_P2;
+                    cnt <= S1 - 1;
+                end
+            end
+        end else begin
+            case (ph)
+                PH_NORM: begin
+                    if ((MA[10] | MA[9]) & (MB[10] | MB[9])) begin
                         ph  <= PH_P2;
                         cnt <= S1 - 1;
                     end
                 end
-            end else begin
-                case (ph)
-                    PH_NORM: begin
-                        if ((MA[10] | MA[9]) & (MB[10] | MB[9])) begin
-                            ph  <= PH_P2;
-                            cnt <= S1 - 1;
-                        end
+                PH_P2, PH_P1, PH_P3, PH_P4: begin
+                    if (!last) cnt <= cnt - 3'd1;
+                    else begin
+                        case (ph)
+                            PH_P2: begin ph <= PH_P1; cnt <= S1 - 1; end
+                            PH_P1: begin ph <= PH_P3; cnt <= S3 - 1; end
+                            PH_P3: begin ph <= PH_P4; cnt <= S4 - 1; end
+                            default: ph <= PH_FIN;
+                        endcase
                     end
-                    PH_P2, PH_P1, PH_P3, PH_P4: begin
-                        if (!last) cnt <= cnt - 2'd1;
-                        else begin
-                            case (ph)
-                                PH_P2: begin ph <= PH_P1; cnt <= S1 - 1; end
-                                PH_P1: begin ph <= PH_P3; cnt <= S3 - 1; end
-                                PH_P3: begin ph <= PH_P4; cnt <= S4 - 1; end
-                                default: ph <= PH_FIN;
-                            endcase
-                        end
+                end
+                PH_FIN: begin
+                    if (!(det & ~rty)) begin
+                        if (spec_r | e_pos | e_far)
+                            flags <= spec_r ? {invalid_n, divz_n, 3'b000} : e_far ? 5'b00011 :
+                                     ovf ? 5'b00101 : {4'b0000, inexact};
+                        else
+                            ph <= PH_DEN;
                     end
-                    PH_FIN: begin
-                        if (det & ~rty) begin                    // fault: repeat the divide once
-                            rty   <= 1'b1;
-                            re_go <= 1'b1;
-                            run   <= 1'b0;
-                        end else begin
-                            fault     <= det;                    // the repeat failed too
-                            corrected <= rty & ~det;             // the repeat passed
-                            if (spec_r | e_pos | e_far) begin
-                                flags <= spec_r ? {invalid_n, divz_n, 3'b000} : e_far ? 5'b00011 :
-                                         ovf ? 5'b00101 : {4'b0000, inexact};
-                                done  <= 1'b1;
-                                run   <= 1'b0;
-                            end else
-                                ph <= PH_DEN;
-                        end
-                    end
-                    PH_DEN: begin
-                        if (ER == 7'sd0) ph <= PH_RND;
-                    end
-                    PH_RND: begin
-                        flags <= {3'b000, tiny_r & inexact, inexact};
-                        done  <= 1'b1;
-                        run   <= 1'b0;
-                    end
-                endcase
-            end
+                end
+                PH_DEN: begin
+                    if (ER == 7'sd0) ph <= PH_RND;
+                end
+                PH_RND: flags <= {3'b000, tiny_r & inexact, inexact};
+            endcase
         end
     end
 
